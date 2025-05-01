@@ -1,0 +1,162 @@
+import subprocess
+import threading
+import time
+import os
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse
+import requests
+import uvicorn
+import signal
+import subprocess
+import os
+
+DETACHED = 0x00000008  # Windows CREATE_NEW_CONSOLE
+DETACHED_PROCESS = 0x00000008
+
+class WhatsAppWebClient:
+    def __init__(
+        self,
+        node_server_url: str = "http://localhost:3000",
+        callback_host: str = "http://localhost:8000",
+        callback_path: str = "/whatsapp-webhook",
+        port: int = 8000,
+        host: str = "0.0.0.0"
+    ):
+        self.app = FastAPI()
+        self.node_server_url = node_server_url
+        self.callback_host = callback_host
+        self.callback_path = callback_path
+        self.callback_url = f"{callback_host}{callback_path}"
+        self.port = port
+        self.host = host
+        self.node_script_path = self._resolve_node_script_path()
+        self.node_process = None
+        self.message_callback = None
+        self.keep_node_running = False
+        self._setup_routes()
+
+    def set_message_callback(self, callback):
+        self.message_callback = callback
+
+    def _resolve_node_script_path(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        node_path = os.path.join(here, "node_server.js")
+        if not os.path.exists(node_path):
+            raise FileNotFoundError(f"❌ node_server.js not found at {node_path}")
+        return node_path
+
+    def send(self, to: str, message: str) -> dict:
+        if not to or not message:
+            raise ValueError("Both 'to' and 'message' are required.")
+
+        try:
+            response = requests.post(
+                f"{self.node_server_url}/send",
+                json={"to": to, "message": message}
+            )
+            response.raise_for_status()
+            print(f"📤 Message sent to {to}: {message}")
+            return response.json()
+        except requests.RequestException as e:
+            print(f"❌ Failed to send message to {to}: {e}")
+            raise
+
+
+    def _setup_routes(self):
+        @self.app.post(self.callback_path)
+        async def whatsapp_webhook(request: Request):
+            data = await request.json()
+            sender = data.get("from")
+            message = data.get("body")
+            print(f"📥 Incoming WhatsApp message from {sender}: {message}")
+
+            if self.message_callback:
+                try:
+                    self.message_callback(sender, message)
+                except Exception as e:
+                    print(f"⚠️ Error in message callback: {e}")
+
+            return JSONResponse(content={"status": "received"})
+
+    def register_callback(self):
+        try:
+            res = requests.post(f"{self.node_server_url}/register", json={"url": self.callback_url})
+            res.raise_for_status()
+            print(f"✅ Registered callback: {res.json()}")
+        except requests.RequestException as e:
+            print(f"❌ Failed to register callback: {e}")
+
+    def _start_node_process(self, quiet=True):
+
+        if self._node_alive():
+            print("🟢 Detected existing Node.js server — reusing.")
+            return
+
+        creationflags = DETACHED_PROCESS if self.keep_node_running else 0
+        stdout = subprocess.DEVNULL if quiet else subprocess.PIPE
+        stderr = subprocess.DEVNULL if quiet else subprocess.STDOUT
+
+        print("🚀 Starting Node.js server...")
+        self.node_process = subprocess.Popen(
+            ["node", self.node_script_path],
+            stdout=stdout,
+            stderr=stderr,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+            text=True,
+            encoding="utf-8"
+        )
+
+        if not quiet:
+            def stream_output():
+                for line in self.node_process.stdout:
+                    print(f"[node] {line.strip()}")
+            threading.Thread(target=stream_output, daemon=True).start()
+
+        time.sleep(5)
+
+    def run(self, quiet=True, callback=None, keep_node_running=False):
+        """
+        Start Node.js and FastAPI server, and block the main thread.
+        """
+        if callback:
+            self.message_callback = callback
+
+        self.keep_node_running = keep_node_running
+        self._start_node_process(quiet=quiet)
+        self.register_callback()
+
+        def start_fastapi():
+            uvicorn.run(self.app, host=self.host, port=self.port)
+
+        threading.Thread(target=start_fastapi, daemon=True).start()
+        self.wait_forever()
+
+    def wait_forever(self):
+        """Blocks the main thread and gracefully shuts down on Ctrl+C."""
+        def handle_sigint(sig, frame):
+            print("\n🛑 Caught Ctrl+C, shutting down...")
+            self.stop()
+            os._exit(0)  # ensure all threads and servers are killed
+
+        signal.signal(signal.SIGINT, handle_sigint)
+        print("🕓 WhatsAppWebhookClient is running. Press Ctrl+C to stop.")
+        while True:
+            time.sleep(1)
+
+    def stop(self):
+        if self.keep_node_running:
+            return
+        
+        if self.node_process:
+            print("🛑 Stopping Node.js server...")
+            self.node_process.terminate()
+            self.node_process = None
+    
+    def _node_alive(self) -> bool:
+        try:
+            res = requests.get(f"{self.node_server_url}/health", timeout=2)
+            return res.status_code == 200
+        except Exception:
+            return False
+
