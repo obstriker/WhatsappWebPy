@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import requests
 import uvicorn
+import urllib
 
 DETACHED = 0x00000008  # Windows CREATE_NEW_CONSOLE
 DETACHED_PROCESS = 0x00000008
@@ -19,6 +20,12 @@ def load_model():
 def transcribe_audio(voice_file_path, model):
     return model.transcribe(voice_file_path)["text"]
 
+# TODO: add layer for AI functions
+# TODO: let users implement functions easily like:
+#          - Summarize youtube
+#          - Schedule X
+#          - TickTick operations
+#          - Obsidian operations
 
 class WhatsAppWebClient:
     def __init__(
@@ -26,23 +33,25 @@ class WhatsAppWebClient:
         node_server_url: str = "http://localhost:3000",
         callback_host: str = "http://localhost:8000",
         callback_path: str = "/whatsapp-webhook",
-        port: int = 8000,
-        host: str = "0.0.0.0",
-        transcribe=False
+        transcribe=False,
+        port=8000,
+        hostname="localhost"
     ):
         self.app = FastAPI()
         self.node_server_url = node_server_url
         self.callback_host = callback_host
         self.callback_path = callback_path
-        self.callback_url = f"{callback_host}{callback_path}"
-        self.port = port
-        self.host = host
+        self.callback_url = callback_host + callback_path
         self.node_script_path = self._resolve_node_script_path()
         self.node_process = None
         self.message_callback = None
         self.voice_message_callback = None
         self.keep_node_running = False
         self.transcribe = transcribe
+
+        parsed_url = urllib.parse.urlparse(self.callback_url)
+        self.port = parsed_url.port
+        self.host = parsed_url.hostname
 
         if self.transcribe:
             self.model = load_model()
@@ -109,13 +118,32 @@ class WhatsAppWebClient:
 
             return JSONResponse(content={"status": "received"})
 
-    def register_callback(self):
+    def register_callback(self, filters = None):
         try:
-            res = requests.post(f"{self.node_server_url}/register", json={"url": self.callback_url})
+            res = requests.post(f"{self.node_server_url}/register", json={"url": self.callback_url, "filters": filters})
             res.raise_for_status()
             print(f"✅ Registered callback: {res.json()}")
         except requests.RequestException as e:
             print(f"❌ Failed to register callback: {e}")
+
+    def register(self, groupname=None, chatid=None):
+        filters = {
+            "groupName": groupname,
+            "chatId": chatid
+        }
+        
+        # Call the existing register_callback method with the filters
+        self.register_callback(filters)
+        
+    def unregister(self):
+        """Unregister the callback URL from the Node.js server."""
+        try:
+            res = requests.post(f"{self.node_server_url}/unregister", json={"url": self.callback_url})
+            res.raise_for_status()
+            print(f"✅ Unregistered callback: {res.json()}")
+        except requests.RequestException as e:
+            print(f"❌ Failed to unregister callback: {e}")
+
 
     def _start_node_process(self, quiet=True):
         if self._node_alive():
@@ -148,7 +176,7 @@ class WhatsAppWebClient:
 
         time.sleep(5)
 
-    def run(self, quiet=True, callback=None, voice_callback=None, keep_node_running=False, transcribe=True):
+    def run(self, quiet=True, callback=None, voice_callback=None, keep_node_running=False, transcribe=True, groupname = None, chatid = None):
         """
         Start Node.js and FastAPI server, and block the main thread.
         """
@@ -164,7 +192,7 @@ class WhatsAppWebClient:
 
         self.keep_node_running = keep_node_running
         self._start_node_process(quiet=quiet)
-        self.register_callback()
+        self.register(groupname = groupname, chatid = chatid)
 
         def start_fastapi():
             uvicorn.run(self.app, host=self.host, port=self.port)
@@ -188,6 +216,8 @@ class WhatsAppWebClient:
         if self.keep_node_running:
             return
         
+        self.unregister()
+
         if self.node_process:
             print("🛑 Stopping Node.js server...")
             self.node_process.terminate()
