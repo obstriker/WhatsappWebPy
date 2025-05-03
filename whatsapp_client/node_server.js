@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const express = require('express');
 const axios = require('axios');
 const qrcode = require('qrcode-terminal');
@@ -12,6 +12,7 @@ const registeredCallbacks = new Set();
 const fs = require('fs');
 const path = require('path');
 const logFile = path.join(__dirname, 'whatsapp.log');
+const audioDir = path.join(__dirname, '../audio');
 
 function logToFile(message) {
     const timestamp = new Date().toISOString();
@@ -19,7 +20,6 @@ function logToFile(message) {
     fs.appendFileSync(logFile, line);
     // console.log(message); // still print to console too
 }
-
 
 // Initialize WhatsApp client
 const client = new Client({
@@ -38,13 +38,40 @@ client.on('qr', qr => {
 
 // Handle incoming messages from WhatsApp
 client.on('message', async msg => {
+
+    // Create 'audio' directory if it doesn't exist
+    if (!fs.existsSync(audioDir)) {
+        fs.mkdirSync(audioDir);
+    }
+
     const payload = {
         from: msg.from,
         body: msg.body,
+        type: msg.type,
     };
 
     logToFile(`📩 Message received: ${JSON.stringify(payload)}`);
 
+    // Check if the received message is a voice recording
+    if (msg.type === 'ptt') { // 'ptt' indicates a voice note
+        try {
+            const media = await msg.downloadMedia();
+            if (media) {
+                const voiceFileName = `voice_${Date.now()}.ogg`;
+                const voiceFilePath = path.join(audioDir, voiceFileName); // Using audioDir variable to ensure the correct path
+                // Save the voice recording
+                fs.writeFileSync(voiceFilePath, Buffer.from(media.data, 'base64'));
+                logToFile(`🎤 Voice message saved as: ${voiceFileName}`);
+
+                // Attach the voice message file path to the payload
+                payload.voiceFilePath = voiceFilePath;
+            }
+        } catch (err) {
+        logToFile(`❌ Error processing voice message: ${err.message}`);
+    }
+    }
+
+    // Forward the message (including voice recordings) to registered callbacks
     for (const url of registeredCallbacks) {
         try {
             logToFile(`➡️  POST ${url}`);
@@ -73,7 +100,6 @@ app.post('/register', (req, res) => {
     res.json({ status: 'Callback registered' });
 });
 
-
 // Send message endpoint
 app.post('/send', async (req, res) => {
     const { to, message } = req.body;
@@ -87,7 +113,7 @@ app.post('/send', async (req, res) => {
         logToFile(`📤 Message sent to ${to}: ${message}`);
         res.json({ status: 'Message sent' });
     } catch (err) {
-        logToFile('❌ Failed to send message:', err);
+        logToFile(`❌ Failed to send message: ${err.message}`);
         res.status(500).json({ error: 'Failed to send message' });
     }
 });

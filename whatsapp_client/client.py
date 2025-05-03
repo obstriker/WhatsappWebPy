@@ -1,17 +1,24 @@
+import os
 import subprocess
 import threading
 import time
-import os
-from fastapi import FastAPI, Request, HTTPException
+import platform
+import signal
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import requests
 import uvicorn
-import signal
-import subprocess
-import os
 
 DETACHED = 0x00000008  # Windows CREATE_NEW_CONSOLE
 DETACHED_PROCESS = 0x00000008
+
+def load_model():
+    import whisper
+    return whisper.load_model("base")
+
+def transcribe_audio(voice_file_path, model):
+    return model.transcribe(voice_file_path)["text"]
+
 
 class WhatsAppWebClient:
     def __init__(
@@ -20,7 +27,8 @@ class WhatsAppWebClient:
         callback_host: str = "http://localhost:8000",
         callback_path: str = "/whatsapp-webhook",
         port: int = 8000,
-        host: str = "0.0.0.0"
+        host: str = "0.0.0.0",
+        transcribe=False
     ):
         self.app = FastAPI()
         self.node_server_url = node_server_url
@@ -32,11 +40,20 @@ class WhatsAppWebClient:
         self.node_script_path = self._resolve_node_script_path()
         self.node_process = None
         self.message_callback = None
+        self.voice_message_callback = None
         self.keep_node_running = False
-        self._setup_routes()
+        self.transcribe = transcribe
+
+        if self.transcribe:
+            self.model = load_model()
+        self._setup_routes(),
+    
 
     def set_message_callback(self, callback):
         self.message_callback = callback
+
+    def set_voice_message_callback(self, callback):
+        self.voice_message_callback = callback
 
     def _resolve_node_script_path(self):
         here = os.path.dirname(os.path.abspath(__file__))
@@ -61,20 +78,34 @@ class WhatsAppWebClient:
             print(f"❌ Failed to send message to {to}: {e}")
             raise
 
-
     def _setup_routes(self):
         @self.app.post(self.callback_path)
         async def whatsapp_webhook(request: Request):
             data = await request.json()
             sender = data.get("from")
             message = data.get("body")
-            print(f"📥 Incoming WhatsApp message from {sender}: {message}")
+            message_type = data.get("type")
+            voice_file_path = data.get("voiceFilePath")
 
-            if self.message_callback:
-                try:
+            print(f"📥 Incoming WhatsApp message from {sender}: {message} (type: {message_type})")
+
+            # Handle text or other types of messages
+            if message_type != "ptt":
+                if self.message_callback:
+                    try:
+                        self.message_callback(sender, message)
+                    except Exception as e:
+                        print(f"⚠️ Error in message callback: {e}")
+            else:
+                # Handle voice recordings
+                if self.transcribe and message_type == "ptt":
+                    message = transcribe_audio(voice_file_path, self.model)
                     self.message_callback(sender, message)
-                except Exception as e:
-                    print(f"⚠️ Error in message callback: {e}")
+                elif self.voice_message_callback:
+                    try:
+                        self.voice_message_callback(sender, voice_file_path)
+                    except Exception as e:
+                        print(f"⚠️ Error in voice message callback: {e}")
 
             return JSONResponse(content={"status": "received"})
 
@@ -87,22 +118,24 @@ class WhatsAppWebClient:
             print(f"❌ Failed to register callback: {e}")
 
     def _start_node_process(self, quiet=True):
-
         if self._node_alive():
             print("🟢 Detected existing Node.js server — reusing.")
             return
 
-        creationflags = DETACHED_PROCESS if self.keep_node_running else 0
+        is_windows = platform.system() == "Windows"
+        creationflags = DETACHED_PROCESS if (self.keep_node_running and is_windows) else 0
+
         stdout = subprocess.DEVNULL if quiet else subprocess.PIPE
         stderr = subprocess.DEVNULL if quiet else subprocess.STDOUT
 
         print("🚀 Starting Node.js server...")
+
         self.node_process = subprocess.Popen(
             ["node", self.node_script_path],
             stdout=stdout,
             stderr=stderr,
             stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
+            creationflags=creationflags if is_windows else 0,
             text=True,
             encoding="utf-8"
         )
@@ -115,12 +148,19 @@ class WhatsAppWebClient:
 
         time.sleep(5)
 
-    def run(self, quiet=True, callback=None, keep_node_running=False):
+    def run(self, quiet=True, callback=None, voice_callback=None, keep_node_running=False, transcribe=True):
         """
         Start Node.js and FastAPI server, and block the main thread.
         """
         if callback:
             self.message_callback = callback
+        if voice_callback:
+            self.voice_message_callback = voice_callback
+
+        self.transcribe = transcribe
+
+        if transcribe:
+            self.model = load_model()
 
         self.keep_node_running = keep_node_running
         self._start_node_process(quiet=quiet)
@@ -159,4 +199,3 @@ class WhatsAppWebClient:
             return res.status_code == 200
         except Exception:
             return False
-
