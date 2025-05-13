@@ -24,7 +24,7 @@ function logToFile(message) {
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        headless: false,
+        headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
     }
 });
@@ -190,4 +190,6 @@ process.on('uncaughtException', (err) => {
 app.listen(port, () => {
     logToFile(`🚀 Express server running on http://localhost:${port}`);
 });
+
+console.log("🔧 Initializing WhatsApp client...");
 client.initialize();

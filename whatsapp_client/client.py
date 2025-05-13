@@ -34,6 +34,7 @@ class WhatsAppWebClient:
         callback_host: str = "http://localhost:8000",
         callback_path: str = "/whatsapp-webhook",
         transcribe=False,
+        setup_node = True
         port=8000,
         hostname="localhost"
     ):
@@ -46,7 +47,7 @@ class WhatsAppWebClient:
         self.node_process = None
         self.message_callback = None
         self.voice_message_callback = None
-        self.setup_node = True
+        self.setup_node = setup_node
         self.transcribe = transcribe
 
         parsed_url = urllib.parse.urlparse(self.callback_url)
