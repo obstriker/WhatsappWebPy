@@ -46,7 +46,7 @@ class WhatsAppWebClient:
         self.node_process = None
         self.message_callback = None
         self.voice_message_callback = None
-        self.keep_node_running = False
+        self.setup_node = True
         self.transcribe = transcribe
 
         parsed_url = urllib.parse.urlparse(self.callback_url)
@@ -151,7 +151,7 @@ class WhatsAppWebClient:
             return
 
         is_windows = platform.system() == "Windows"
-        creationflags = DETACHED_PROCESS if (self.keep_node_running and is_windows) else 0
+        creationflags = DETACHED_PROCESS if (self.setup_node and is_windows) else 0
 
         stdout = subprocess.DEVNULL if quiet else subprocess.PIPE
         stderr = subprocess.DEVNULL if quiet else subprocess.STDOUT
@@ -176,7 +176,7 @@ class WhatsAppWebClient:
 
         time.sleep(5)
 
-    def run(self, quiet=True, callback=None, voice_callback=None, keep_node_running=False, transcribe=True, groupname = None, chatid = None):
+    def run(self, quiet=True, callback=None, voice_callback=None, setup_node=False, transcribe=True, groupname = None, chatid = None):
         """
         Start Node.js and FastAPI server, and block the main thread.
         """
@@ -190,8 +190,9 @@ class WhatsAppWebClient:
         if transcribe:
             self.model = load_model()
 
-        self.keep_node_running = keep_node_running
-        self._start_node_process(quiet=quiet)
+        self.setup_node = setup_node
+        if self.setup_node:
+            self._start_node_process(quiet=quiet)
         self.register(groupname = groupname, chatid = chatid)
 
         def start_fastapi():
@@ -213,7 +214,7 @@ class WhatsAppWebClient:
             time.sleep(1)
 
     def stop(self):
-        if self.keep_node_running:
+        if self.setup_node:
             return
         
         self.unregister()
