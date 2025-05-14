@@ -30,13 +30,13 @@ def transcribe_audio(voice_file_path, model):
 class WhatsAppWebClient:
     def __init__(
         self,
-        node_server_url: str = "http://localhost:3000",
-        callback_host: str = "http://localhost:8000",
+        node_server_url: str = "http://127.0.0.1:3000",
+        callback_host: str = "http://127.0.0.1:8000",
         callback_path: str = "/whatsapp-webhook",
         transcribe=False,
         setup_node = True,
         port=8000,
-        hostname="localhost"
+        hostname="0.0.0.0"
     ):
         self.app = FastAPI()
         self.node_server_url = node_server_url
@@ -52,7 +52,7 @@ class WhatsAppWebClient:
 
         parsed_url = urllib.parse.urlparse(self.callback_url)
         self.port = parsed_url.port
-        self.host = parsed_url.hostname
+        self.host = hostname
 
         if self.transcribe:
             self.model = load_model()
