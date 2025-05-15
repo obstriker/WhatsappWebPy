@@ -14,8 +14,11 @@ DETACHED = 0x00000008  # Windows CREATE_NEW_CONSOLE
 DETACHED_PROCESS = 0x00000008
 
 def load_model():
-    import whisper
-    return whisper.load_model("base")
+    try:
+        import whisper
+        return whisper.load_model("base")
+    except:
+        pass
 
 def transcribe_audio(voice_file_path, model):
     return model.transcribe(voice_file_path)["text"]
@@ -35,8 +38,8 @@ class WhatsAppWebClient:
         callback_path: str = "/whatsapp-webhook",
         transcribe=False,
         setup_node = True,
-        port=8000,
-        hostname="0.0.0.0"
+        port = 8000,
+        hostname = "0.0.0.0"
     ):
         self.app = FastAPI()
         self.node_server_url = node_server_url
